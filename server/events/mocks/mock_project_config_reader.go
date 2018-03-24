@@ -20,7 +20,7 @@ func NewMockProjectConfigReader() *MockProjectConfigReader {
 
 func (mock *MockProjectConfigReader) Exists(projectPath string) bool {
 	params := []pegomock.Param{projectPath}
-	result := pegomock.GetGenericMockFrom(mock).Invoke("Exists", params, []reflect.Type{reflect.TypeOf((*bool)(nil)).Elem()})
+	result := pegomock.GetGenericMockFrom(mock).Invoke("HasLegacyConfig", params, []reflect.Type{reflect.TypeOf((*bool)(nil)).Elem()})
 	var ret0 bool
 	if len(result) != 0 {
 		if result[0] != nil {
@@ -66,7 +66,7 @@ type VerifierProjectConfigReader struct {
 
 func (verifier *VerifierProjectConfigReader) Exists(projectPath string) *ProjectConfigReader_Exists_OngoingVerification {
 	params := []pegomock.Param{projectPath}
-	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "Exists", params)
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "HasLegacyConfig", params)
 	return &ProjectConfigReader_Exists_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
 }
 

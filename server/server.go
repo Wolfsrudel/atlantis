@@ -35,6 +35,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/locking"
 	"github.com/runatlantis/atlantis/server/events/locking/boltdb"
+	"github.com/runatlantis/atlantis/server/events/repoconfig"
 	"github.com/runatlantis/atlantis/server/events/run"
 	"github.com/runatlantis/atlantis/server/events/terraform"
 	"github.com/runatlantis/atlantis/server/events/vcs"
@@ -188,6 +189,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		ConfigReader: configReader,
 		Terraform:    terraformClient,
 	}
+	repoConfig := repoconfig.Reader{
+		DefaultTFVersion:  terraformClient.Version(),
+		TerraformExecutor: terraformClient,
+	}
 	applyExecutor := &events.ApplyExecutor{
 		VCSClient:         vcsClient,
 		Terraform:         terraformClient,
@@ -195,6 +200,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		Run:               run,
 		AtlantisWorkspace: workspace,
 		ProjectPreExecute: projectPreExecute,
+		RepoConfigReader:  repoConfig,
 		Webhooks:          webhooksManager,
 	}
 	planExecutor := &events.PlanExecutor{
@@ -205,6 +211,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		ProjectPreExecute: projectPreExecute,
 		Locker:            lockingClient,
 		ProjectFinder:     &events.DefaultProjectFinder{},
+		RepoConfigReader:  repoConfig,
 	}
 	pullClosedExecutor := &events.PullClosedExecutor{
 		VCSClient: vcsClient,

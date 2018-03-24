@@ -64,12 +64,12 @@ extra_arguments:
 var c events.ProjectConfigManager
 
 func TestExists_InvalidPath(t *testing.T) {
-	t.Log("given a path to a directory that doesn't exist Exists should return false")
+	t.Log("given a path to a directory that doesn't exist HasLegacyConfig should return false")
 	Equals(t, c.Exists("/invalid/path"), false)
 }
 
 func TestExists_ValidPath(t *testing.T) {
-	t.Log("given a path to a directory with an atlantis config file, Exists returns true")
+	t.Log("given a path to a directory with an atlantis config file, HasLegacyConfig returns true")
 	writeAtlantisConfigFile(t, []byte(projectConfigFileStr))
 	defer os.Remove(tempConfigFile) // nolint: errcheck
 	Equals(t, c.Exists("/tmp"), true)

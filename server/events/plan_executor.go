@@ -15,12 +15,10 @@ package events
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/locking"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/repoconfig"
 	"github.com/runatlantis/atlantis/server/events/run"
 	"github.com/runatlantis/atlantis/server/events/terraform"
 	"github.com/runatlantis/atlantis/server/events/vcs"
@@ -35,10 +33,6 @@ type LockURLGenerator interface {
 	SetLockURL(func(id string) (url string))
 }
 
-// atlantisUserTFVar is the name of the variable we execute terraform
-// with, containing the vcs username of who is running the command
-const atlantisUserTFVar = "atlantis_user"
-
 // PlanExecutor handles everything related to running terraform plan.
 type PlanExecutor struct {
 	VCSClient         vcs.ClientProxy
@@ -49,6 +43,7 @@ type PlanExecutor struct {
 	Workspace         AtlantisWorkspace
 	ProjectPreExecute ProjectPreExecutor
 	ProjectFinder     ProjectFinder
+	RepoConfigReader  repoconfig.Reader
 }
 
 // PlanSuccess is the result of a successful plan.
@@ -70,79 +65,117 @@ func (p *PlanExecutor) Execute(ctx *CommandContext) CommandResponse {
 		return CommandResponse{Error: err}
 	}
 
-	var projects []models.Project
-	if ctx.Command.Dir == "" {
-		// If they didn't specify a directory to plan in, figure out what
-		// projects have been modified so we know where to run plan.
-		modifiedFiles, err := p.VCSClient.GetModifiedFiles(ctx.BaseRepo, ctx.Pull, ctx.VCSHost)
-		if err != nil {
-			return CommandResponse{Error: errors.Wrap(err, "getting modified files")}
-		}
-		ctx.Log.Info("found %d files modified in this pull request", len(modifiedFiles))
-		projects = p.ProjectFinder.DetermineProjects(ctx.Log, modifiedFiles, ctx.BaseRepo.FullName, cloneDir)
-		if len(projects) == 0 {
-			return CommandResponse{Failure: "No Terraform files were modified."}
-		}
-	} else {
-		projects = []models.Project{{
-			Path:         ctx.Command.Dir,
-			RepoFullName: ctx.BaseRepo.FullName,
-		}}
+	stage, err := p.RepoConfigReader.BuildPlanStage(ctx.Log, cloneDir, ctx.Command.Workspace, ctx.Command.Dir, ctx.Command.Flags, ctx.User.Username)
+	if err != nil {
+		return CommandResponse{Error: err}
 	}
 
-	var results []ProjectResult
-	for _, project := range projects {
-		ctx.Log.Info("running plan for project at path %q", project.Path)
-		result := p.plan(ctx, cloneDir, project)
-		result.Path = project.Path
-		results = append(results, result)
-	}
-	return CommandResponse{ProjectResults: results}
-}
-
-func (p *PlanExecutor) plan(ctx *CommandContext, repoDir string, project models.Project) ProjectResult {
-	preExecute := p.ProjectPreExecute.Execute(ctx, repoDir, project)
+	// check if we have the lock
+	preExecute := p.ProjectPreExecute.Execute(ctx, models.NewProject(ctx.BaseRepo.FullName, ctx.Command.Dir))
 	if preExecute.ProjectResult != (ProjectResult{}) {
-		return preExecute.ProjectResult
+		return CommandResponse{ProjectResults: []ProjectResult{preExecute.ProjectResult}}
 	}
-	config := preExecute.ProjectConfig
-	terraformVersion := preExecute.TerraformVersion
-	workspace := ctx.Command.Workspace
 
-	// Run terraform plan.
-	planFile := filepath.Join(repoDir, project.Path, fmt.Sprintf("%s.tfplan", workspace))
-	userVar := fmt.Sprintf("%s=%s", atlantisUserTFVar, ctx.User.Username)
-	planExtraArgs := config.GetExtraArguments(ctx.Command.Name.String())
-	tfPlanCmd := append(append([]string{"plan", "-refresh", "-no-color", "-out", planFile, "-var", userVar}, planExtraArgs...), ctx.Command.Flags...)
-
-	// Check if env/{workspace}.tfvars exist.
-	envFileName := filepath.Join("env", workspace+".tfvars")
-	if _, err := os.Stat(filepath.Join(repoDir, project.Path, envFileName)); err == nil {
-		tfPlanCmd = append(tfPlanCmd, "-var-file", envFileName)
-	}
-	output, err := p.Terraform.RunCommandWithVersion(ctx.Log, filepath.Join(repoDir, project.Path), tfPlanCmd, terraformVersion, workspace)
+	out, err := stage.Run()
 	if err != nil {
 		// Plan failed so unlock the state.
 		if _, unlockErr := p.Locker.Unlock(preExecute.LockResponse.LockKey); unlockErr != nil {
 			ctx.Log.Err("error unlocking state after plan error: %v", unlockErr)
 		}
-		return ProjectResult{Error: fmt.Errorf("%s\n%s", err.Error(), output)}
-	}
-	ctx.Log.Info("plan succeeded")
-
-	// If there are post plan commands then run them.
-	if len(config.PostPlan) > 0 {
-		absolutePath := filepath.Join(repoDir, project.Path)
-		_, err := p.Run.Execute(ctx.Log, config.PostPlan, absolutePath, workspace, terraformVersion, "post_plan")
-		if err != nil {
-			return ProjectResult{Error: errors.Wrap(err, "running post plan commands")}
-		}
+		return CommandResponse{ProjectResults: []ProjectResult{{Error: fmt.Errorf("%s\n%s", err.Error(), out)}}}
 	}
 
-	return ProjectResult{
+	return CommandResponse{ProjectResults: []ProjectResult{{
 		PlanSuccess: &PlanSuccess{
-			TerraformOutput: output,
+			TerraformOutput: out,
 			LockURL:         p.LockURL(preExecute.LockResponse.LockKey),
 		},
-	}
+	}}}
+
+	// NOTE: this has been modified from how it worked before, now we expect a directory to be specified
+	//if ctx.Command.Dir == "" {
+	//	// If they didn't specify a directory to plan in, figure out what
+	//	// projects have been modified so we know where to run plan.
+	//	modifiedFiles, err := p.VCSClient.GetModifiedFiles(ctx.BaseRepo, ctx.Pull, ctx.VCSHost)
+	//	if err != nil {
+	//		return CommandResponse{Error: errors.Wrap(err, "getting modified files")}
+	//	}
+	//	ctx.Log.Info("found %d files modified in this pull request", len(modifiedFiles))
+	//	projects = p.ProjectFinder.DetermineProjects(ctx.Log, modifiedFiles, ctx.BaseRepo.FullName, cloneDir)
+	//	if len(projects) == 0 {
+	//		return CommandResponse{Failure: "No Terraform files were modified."}
+	//	}
+	//} else {
+	//project := models.Project{
+	//	Path:         ctx.Command.Dir,
+	//	RepoFullName: ctx.BaseRepo.FullName,
+	//}
+	//}
+
+	// running against a single project since we will only ever run plan in one project if done via a comment
+	//ctx.Log.Info("running plan for project at path %q", project.Path)
+	//result := p.plan(ctx, cloneDir, project, cfg.Workflow.Plan)
+	//result.Path = project.Path
+	//return CommandResponse{ProjectResults: []ProjectResult{result}}
 }
+
+//func (p *PlanExecutor) plan(ctx *CommandContext, repoDir string, project models.Project, steps []repoconfig.Step) ProjectResult {
+// NOTE: this no longer runs terraform get/init
+// that should be taken care of by the stages.
+// This is still necessary since it does the plan locking.
+//preExecute := p.ProjectPreExecute.Execute(ctx, repoDir, project)
+//if preExecute.ProjectResult != (ProjectResult{}) {
+//	return preExecute.ProjectResult
+//}
+
+//stepCtx := repoconfig.StepMeta{
+//	Log:                   ctx.Log,
+//	Workspace:             ctx.Command.Workspace,
+//	AbsolutePath:          filepath.Join(repoDir, project.Path),
+//	DirRelativeToRepoRoot: project.Path,
+//	TerraformVersion:      p.Terraform.Version(),
+//	ExtraCommentArgs:      ctx.Command.Flags,
+//	Username:              ctx.User.Username,
+//}
+
+//config := preExecute.ProjectConfig
+//terraformVersion := preExecute.TerraformVersion
+//workspace := ctx.Command.Workspace
+//
+//// Run terraform plan.
+//planFile := filepath.Join(repoDir, project.Path, fmt.Sprintf("%s.tfplan", workspace))
+//userVar := fmt.Sprintf("%s=%s", atlantisUserTFVar, ctx.User.Username)
+//planExtraArgs := config.GetExtraArguments(ctx.Command.Name.String())
+//tfPlanCmd := append(append([]string{"plan", "-refresh", "-no-color", "-out", planFile, "-var", userVar}, planExtraArgs...), ctx.Command.Flags...)
+//
+//// Check if env/{workspace}.tfvars exist.
+//envFileName := filepath.Join("env", workspace+".tfvars")
+//if _, err := os.Stat(filepath.Join(repoDir, project.Path, envFileName)); err == nil {
+//	tfPlanCmd = append(tfPlanCmd, "-var-file", envFileName)
+//}
+//output, err := p.Terraform.RunCommandWithVersion(ctx.Log, filepath.Join(repoDir, project.Path), tfPlanCmd, terraformVersion, workspace)
+//if err != nil {
+//	// Plan failed so unlock the state.
+//	if _, unlockErr := p.Locker.Unlock(preExecute.LockResponse.LockKey); unlockErr != nil {
+//		ctx.Log.Err("error unlocking state after plan error: %v", unlockErr)
+//	}
+//	return ProjectResult{Error: fmt.Errorf("%s\n%s", err.Error(), output)}
+//}
+//ctx.Log.Info("plan succeeded")
+//
+//// If there are post plan commands then run them.
+//if len(config.PostPlan) > 0 {
+//	absolutePath := filepath.Join(repoDir, project.Path)
+//	_, err := p.Run.Execute(ctx.Log, config.PostPlan, absolutePath, workspace, terraformVersion, "post_plan")
+//	if err != nil {
+//		return ProjectResult{Error: errors.Wrap(err, "running post plan commands")}
+//	}
+//}
+//
+//return ProjectResult{
+//	PlanSuccess: &PlanSuccess{
+//		TerraformOutput: strings.Join(outputs, "\n"),
+//		LockURL:         p.LockURL(preExecute.LockResponse.LockKey),
+//	},
+//}
+//}

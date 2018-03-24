@@ -1,4 +1,4 @@
-package atlantisyaml_test
+package repoconfig_test
 
 import (
 	"io/ioutil"
@@ -8,16 +8,16 @@ import (
 
 	"github.com/hashicorp/go-version"
 	. "github.com/petergtz/pegomock"
-	"github.com/runatlantis/atlantis/server/events/atlantisyaml"
 	"github.com/runatlantis/atlantis/server/events/mocks/matchers"
+	"github.com/runatlantis/atlantis/server/events/repoconfig"
 	matchers2 "github.com/runatlantis/atlantis/server/events/run/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/terraform/mocks"
 	. "github.com/runatlantis/atlantis/testing"
 )
 
 func TestRun_NoDir(t *testing.T) {
-	s := atlantisyaml.ApplyStep{
-		Meta: atlantisyaml.StepMeta{
+	s := repoconfig.ApplyStep{
+		Meta: repoconfig.StepMeta{
 			Workspace:             "workspace",
 			AbsolutePath:          "nonexistent/path",
 			DirRelativeToRepoRoot: ".",
@@ -34,8 +34,8 @@ func TestRun_NoPlanFile(t *testing.T) {
 	tmpDir, cleanup := tmpDir_stepTests(t)
 	defer cleanup()
 
-	s := atlantisyaml.ApplyStep{
-		Meta: atlantisyaml.StepMeta{
+	s := repoconfig.ApplyStep{
+		Meta: repoconfig.StepMeta{
 			Workspace:             "workspace",
 			AbsolutePath:          tmpDir,
 			DirRelativeToRepoRoot: ".",
@@ -59,17 +59,17 @@ func TestRun_Success(t *testing.T) {
 	terraform := mocks.NewMockClient()
 
 	tfVersion, _ := version.NewVersion("0.11.4")
-	s := atlantisyaml.ApplyStep{
-		Meta: atlantisyaml.StepMeta{
+	s := repoconfig.ApplyStep{
+		Meta: repoconfig.StepMeta{
 			Workspace:             "workspace",
 			AbsolutePath:          tmpDir,
 			DirRelativeToRepoRoot: ".",
+			TerraformExecutor:     terraform,
 			TerraformVersion:      tfVersion,
 			ExtraCommentArgs:      []string{"comment", "args"},
 			Username:              "username",
 		},
-		ExtraArgs:         []string{"extra", "args"},
-		TerraformExecutor: terraform,
+		ExtraArgs: []string{"extra", "args"},
 	}
 
 	When(terraform.RunCommandWithVersion(matchers.AnyPtrToLoggingSimpleLogger(), AnyString(), AnyStringSlice(), matchers2.AnyPtrToGoVersionVersion(), AnyString())).
